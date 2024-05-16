@@ -43,3 +43,8 @@ bzl_library(
     name = "build_defs_bzl",
     srcs = ["build_defs.bzl"],
 )
+
+py_binary(
+    name = "gen_onednn_version",
+    srcs = ["gen_onednn_version.py"],
+)
