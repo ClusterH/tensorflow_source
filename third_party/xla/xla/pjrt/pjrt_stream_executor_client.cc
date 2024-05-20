@@ -572,7 +572,7 @@ absl::Status AddDestinationBufferSynchronization(
   RecordUsage(std::move(device_buffer), local_device, local_device,
               definition_event, copy_stream,
               /*prefer_to_retain_reference=*/false);
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace
@@ -704,7 +704,7 @@ class ScopedHoldAsExternalReference : public PjRtBuffer::ExternalReference {
          external_reference_->definition_events()) {
       TF_RETURN_IF_ERROR(event->WaitForEventOnExternalStream(stream));
     }
-    return OkStatus();
+    return absl::OkStatus();
   }
 
  private:
@@ -2165,7 +2165,7 @@ absl::Status CheckCompatibleShapes(bool strict_shape_checking,
       buffer_on_device_shape.element_type() == PrimitiveType::PRED &&
       buffer_on_device_shape.dimensions_size() == 1 &&
       buffer_on_device_shape.dimensions(0) == 0) {
-    return OkStatus();
+    return absl::OkStatus();
   }
   // TODO(misard) Support casting of tuple parameters.
   if (strict_shape_checking || buffer_on_device_shape.IsTuple()) {
@@ -2199,7 +2199,7 @@ absl::Status CheckCompatibleShapes(bool strict_shape_checking,
           ShapeUtil::HumanStringWithLayout(buffer_on_device_shape));
     }
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 // Makes a tuple from the arguments to an execution.
@@ -2380,7 +2380,7 @@ absl::Status PjRtStreamExecutorLoadedExecutable::SetUpDonation(
     parameters_that_must_be_donated_.emplace_back(
         std::move(parameters_to_donate));
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 absl::string_view PjRtStreamExecutorLoadedExecutable::name() const {
@@ -2955,7 +2955,7 @@ static Status GetFirstInputError(
       }
     }
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 absl::StatusOr<PjRtLoadedExecutable::Result>
