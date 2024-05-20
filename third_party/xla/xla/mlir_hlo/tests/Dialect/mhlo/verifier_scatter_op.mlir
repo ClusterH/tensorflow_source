@@ -99,7 +99,7 @@ func.func @invalid_scatter(%input_tensor: tensor<200x100x300xf32>,
 func.func @invalid_scatter(%input_tensor: tensor<?x?xf32>,
     %scatter_indices: tensor<10x2xi32>, %updates: tensor<?x?xf32>) ->
       tensor<?x?xf32> {
-  // expected-error @+1 {{expects scatter index leaf dimension to be within [0, rank(scatter_indices) + 1. rank(scatter_indices) is 2 and scatter index leaf dimension is 3.}}
+  // expected-error @+1 {{Expects index_vector_dim to be in range [0, rank-of('scatter_indices')] i.e. [0, 2]. got: 3.}}
   %0 = "mhlo.scatter" (%input_tensor, %scatter_indices, %updates) ({
   ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
     %add = mhlo.add %lhs, %rhs : tensor<f32>
@@ -123,7 +123,7 @@ func.func @invalid_scatter(%input_tensor: tensor<?x?xf32>,
 func.func @invalid_scatter(%input_tensor: tensor<200x100x300xf32>,
     %scatter_indices: tensor<10x2xi32>, %updates: tensor<10x300xf32>) ->
       tensor<200x100x300xf32> {
-  // expected-error @+1 {{expects scatter index leaf dimension to be within [0, rank(scatter_indices) + 1. rank(scatter_indices) is 2 and scatter index leaf dimension is -1.}}
+  // expected-error @+1 {{Expects index_vector_dim to be in range [0, rank-of('scatter_indices')] i.e. [0, 2]. got: -1.}}
   %0 = "mhlo.scatter" (%input_tensor, %scatter_indices, %updates) ({
   ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
     %add = mhlo.add %lhs, %rhs : tensor<f32>
@@ -244,7 +244,7 @@ func.func @invalid_scatter_dimensions() ->  tensor<512x1x6400x6400xf32> {
   %index = mhlo.constant dense<0> : tensor<1xi32>
   %update = mhlo.constant dense<1.000000e+00> : tensor<512x1x6400x6400xf32>
 
-  // expected-error @+1 {{Expects each element of update_window_dims to be in range [0, rank-of('updates') i.e. [0, 4). got: 4.}}
+  // expected-error @+1 {{Expects each element of update_window_dims to be in range [0, rank-of('updates')) i.e. [0, 4). got: 4.}}
   %scatter = "mhlo.scatter"(%base, %index, %update) ({
     ^bb0(%arg5: tensor<f32>, %arg6: tensor<f32>):
       "mhlo.return"(%arg6) : (tensor<f32>) -> ()
@@ -290,7 +290,7 @@ func.func @invalid_scatter_dimensions(%input_tensor: tensor<?x?x?xf32>,
 func.func @invalid_scatter_dimensions(%input_tensor: tensor<200x100x300xf32>,
     %scatter_indices: tensor<10x2xi32>, %updates: tensor<10x300xf32>) ->
       tensor<200x100x300xf32> {
-// expected-error @+1 {{Expects inserted_window_dims to not repeat; got: [1, 1].}}
+// expected-error @+1 {{has duplicated dimension from inserted_window_dims and input_batching_dims: 1}}
   %0 = "mhlo.scatter" (%input_tensor, %scatter_indices, %updates) ({
   ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
     %add = mhlo.add %lhs, %rhs : tensor<f32>
@@ -315,7 +315,7 @@ func.func @invalid_scatter_dimensions(%input_tensor: tensor<200x100x300xf32>,
     %scatter_indices: tensor<10x2xi32>, %updates: tensor<10x300xf32>) ->
       tensor<200x100x300xf32> {
 
-  // expected-error @+1 {{Expects each element of inserted_window_dims to be in range [0, rank-of('operand') i.e. [0, 3). got: 3.}}
+  // expected-error @+1 {{Expects each element of inserted_window_dims to be in range [0, rank-of('operand')) i.e. [0, 3). got: 3.}}
   %0 = "mhlo.scatter" (%input_tensor, %scatter_indices, %updates) ({
   ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
     %add = mhlo.add %lhs, %rhs : tensor<f32>
@@ -339,7 +339,7 @@ func.func @invalid_scatter_dimensions(%input_tensor: tensor<200x100x300xf32>,
 func.func @invalid_scatter_dimensions(%input_tensor: tensor<200x100x300xf32>,
     %scatter_indices: tensor<?x?x?xi32>, %updates: tensor<?x?x?xf32>) -> tensor<?x?x?xf32> {
 
-  // expected-error @+1 {{Expects rank-of operand to match size-of('update_window_dims')  + size-of('inserted_window_dims') i.e. 4 but got 3.}}
+  // expected-error @+1 {{Expects rank-of operand to match size-of('update_window_dims') + size-of('inserted_window_dims') + size-of('input_batching_dims') i.e. 4 but got 3.}}
   %0 = "mhlo.scatter" (%input_tensor, %scatter_indices, %updates) ({
   ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
     %add = mhlo.add %lhs, %rhs : tensor<f32>
@@ -408,7 +408,7 @@ func.func @valid_scatter_dimensions_with_dynamic_index_vector_dim(
 func.func @invalid_scatter_dimensions(%input_tensor: tensor<200x100x300xf32>,
     %scatter_indices: tensor<?x?x?xi32>, %updates: tensor<?x?x?xf32>) -> tensor<?x?x?xf32> {
 
-  // expected-error @+1 {{Invalid scatter_dims_to_operand_dims mapping; domain is [0, 3), got: 1->3.}}
+  // expected-error @+1 {{Expects each element of scatter_dims_to_operand_dims to be in range [0, rank-of('operand')) i.e. [0, 3). got: 3.}}
   %0 = "mhlo.scatter" (%input_tensor, %scatter_indices, %updates) ({
   ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
     %add = mhlo.add %lhs, %rhs : tensor<f32>
@@ -432,7 +432,7 @@ func.func @invalid_scatter_dimensions(%input_tensor: tensor<200x100x300xf32>,
     %scatter_indices: tensor<10x2xi32>, %updates: tensor<10x300xf32>) ->
       tensor<200x100x300xf32> {
 
-  // expected-error @+1 {{Expects scatter_dims_to_operand_dims to not repeat; got: [0, 0].}}
+  // expected-error @+1 {{has duplicated dimension from scatter_dims_to_operand_dims and input_batching_dims: 0}}
   %0 = "mhlo.scatter" (%input_tensor, %scatter_indices, %updates) ({
   ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
     %add = mhlo.add %lhs, %rhs : tensor<f32>
