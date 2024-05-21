@@ -32,23 +32,27 @@ limitations under the License.
 #include <atomic>
 #include <cstddef>
 #include <deque>
-#include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/flags/declare.h"
+#include "absl/log/check.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/logging.h"
-#include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/thread_annotations.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/profiler/lib/traceme.h"
 #include "tsl/platform/criticality.h"
+
+// Exposed for testing only.
+ABSL_DECLARE_FLAG(std::string, tensorflow_batch_padding_policy);
 
 namespace tensorflow {
 namespace serving {
@@ -67,6 +71,22 @@ enum class MixedPriorityBatchingPolicy {
 
 absl::StatusOr<MixedPriorityBatchingPolicy> GetMixedPriorityBatchingPolicy(
     absl::string_view attr_value);
+
+// See the description of the --tensorflow_batch_padding_policy flag for the
+// documentation.
+enum class BatchPaddingPolicy {
+  kPadUp,
+  kBatchDown,
+  kMinimizeTpuCostPerRequest,
+};
+
+// Returns the batching policy specified by the
+// --tensorflow_batch_padding_policy flag.
+//
+// To allow testing code with different flag values, this function does not
+// cache the parsed value of the flag and should therefore preferably not be
+// called on every request.
+BatchPaddingPolicy GetBatchPaddingPolicy();
 
 // The abstract superclass for a unit of work to be done as part of a batch.
 //
@@ -304,6 +324,15 @@ class Batch {
   // Returns the TraceMe context id of this batch.
   uint64 traceme_context_id() const;
 
+  // Attempts to trim this batch to a new, smaller size (not to be confused with
+  // the number of tasks in the batch). On success, the trimmed tasks go into
+  // 'out_trimmed_tasks' in the same order the tasks were in this batch.
+  //
+  // The method might not succeed if it needs to split a large task to hit the
+  // correct size.
+  void TryTrimToNewSize(
+      int new_size, std::vector<std::unique_ptr<TaskType>>& out_trimmed_tasks);
+
  private:
   mutable mutex mu_;
 
@@ -503,6 +532,41 @@ void Batch<TaskType>::Close() {
 template <typename TaskType>
 uint64 Batch<TaskType>::traceme_context_id() const {
   return traceme_context_id_;
+}
+
+template <typename TaskType>
+void Batch<TaskType>::TryTrimToNewSize(
+    int new_size, std::vector<std::unique_ptr<TaskType>>& out_trimmed_tasks) {
+  mutex_lock l(mu_);
+  DCHECK_GT(new_size, 0);
+  DCHECK_LT(new_size, size_);
+  DCHECK(out_trimmed_tasks.empty());
+
+  // Index of the first task to trim away. It is possible that it is the index
+  // of a task of size larger than 1 that will have to be split in order to get
+  // to the target new_size.
+  int32 first_task_to_move = 0;
+  // The sum of sizes of tasks i, where i < first_task_to_move.
+  int32 size_of_previous_tasks = 0;
+  while (size_of_previous_tasks + tasks_[first_task_to_move]->size() <=
+         new_size) {
+    size_of_previous_tasks += tasks_[first_task_to_move]->size();
+    first_task_to_move++;
+  }
+
+  // Check whether task 'first_task_to_move' will have to be split.
+  if (size_of_previous_tasks < new_size) {
+    // TODO: b/325954758 - Consider supporting splitting large tasks and then
+    // drop 'Try' from the method name.
+    return;
+  }
+  DCHECK_EQ(size_of_previous_tasks, new_size);
+
+  // Actually trim.
+  std::move(tasks_.begin() + first_task_to_move, tasks_.end(),
+            std::back_inserter(out_trimmed_tasks));
+  tasks_.resize(first_task_to_move);
+  size_ = new_size;
 }
 
 }  // namespace serving

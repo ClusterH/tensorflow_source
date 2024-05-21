@@ -30,6 +30,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_format.h"
 #include "absl/time/clock.h"
@@ -269,6 +270,10 @@ class SharedBatchScheduler
     // effective only when enable_priority_queue is true.
     MixedPriorityBatchingPolicy mixed_priority_batching_policy =
         MixedPriorityBatchingPolicy::kLowPriorityPaddingWithMaxBatchSize;
+
+    // Whether to pad to next allowed batch size or truncate to previous allowed
+    // batch size.
+    BatchPaddingPolicy batch_padding_policy = GetBatchPaddingPolicy();
   };
   Status AddQueue(const QueueOptions& options,
                   ProcessBatchCallback process_batch_callback,
@@ -523,6 +528,18 @@ class Queue {
   // queue. It will immediately return an empty vector when
   // enable_priority_queue is false.
   std::vector<std::unique_ptr<TaskType>> GetLowPriorityTasks(size_t size);
+
+  // Implements support for BatchPaddingPolicy::kBatchDown and
+  // BatchPaddingPolicy::kMinimizeTpuCostPerRequest.
+  //
+  // For example, when GetBatchPaddingPolicy() == kBatchDown, this method trims
+  // the about-to-be-closed batch 'batch' (when this is doable) and returns the
+  // trimmed tasks in the 'out_trimmed_tasks' vector in the same order they
+  // were in the batch.
+  void MaybeTrimBatchToNearestAllowedSize(
+      Batch<TaskType>& batch,
+      std::vector<std::unique_ptr<TaskType>>& out_trimmed_tasks)
+      TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   const typename SharedBatchScheduler<TaskType>::QueueOptions options_;
 
@@ -1223,7 +1240,23 @@ Queue<TaskType>::ScheduleBatchWithEagerSplit() {
     std::deque<std::unique_ptr<Batch<TaskType>>>& batches = GetBatches();
     // Consider closing the open batch at this time, to schedule it.
     if (batches.size() == 1 && IsOpenBatchSchedulable()) {
+      // Support BatchPaddingPolicy::kBatchDown and
+      // BatchPaddingPolicy::kMinimizeTpuCostPerRequest. We do it before
+      // starting a new batch because starting a new batch will close the old
+      // batch, making it read-only.
+      std::vector<std::unique_ptr<TaskType>> trimmed_tasks;
+      MaybeTrimBatchToNearestAllowedSize(
+          /* batch= */ *batches[0], /* out_trimmed_tasks= */ trimmed_tasks);
+
       StartNewBatch();
+
+      // Move the trimmed tasks, if any, into the new batch.
+      DCHECK_EQ(batches.size(), 2);
+      Batch<TaskType>& new_batch = *batches[1];
+      DCHECK_EQ(new_batch.size(), 0);
+      for (std::unique_ptr<TaskType>& task : trimmed_tasks) {
+        new_batch.AddTask(std::move(task));
+      }
     }
 
     if (batches.size() >= 2) {
@@ -1249,6 +1282,40 @@ Queue<TaskType>::ScheduleBatchWithEagerSplit() {
     ++num_batches_being_processed_;
   }
   return batch_to_schedule;
+}
+
+template <typename TaskType>
+void Queue<TaskType>::MaybeTrimBatchToNearestAllowedSize(
+    Batch<TaskType>& batch,
+    std::vector<std::unique_ptr<TaskType>>& out_trimmed_tasks) {
+  switch (options_.batch_padding_policy) {
+    case BatchPaddingPolicy::kPadUp:
+      // This is the default behavior of batch resource when it is given a batch
+      // size that doesn't match any of the allowed batch sizes.
+      return;
+    case BatchPaddingPolicy::kBatchDown:
+      // Continue with this method.
+      break;
+    case BatchPaddingPolicy::kMinimizeTpuCostPerRequest:
+      LOG(FATAL) << "SharedBatchScheduler doesn't yet implement "  // Crash OK
+                    "BatchPaddingPolicy::kMinimizeTpuCostPerRequest";
+  }
+
+  int32 batch_size = batch.size();
+
+  int32 pad_up_size = GetNextAllowedBatchSize(
+      batch_size, options_.allowed_batch_sizes, options_.disable_padding);
+  if (pad_up_size == batch_size) {
+    return;  // Good, no padding is necessary.
+  }
+
+  int32 batch_down_size = GetPrevAllowedBatchSize(
+      batch_size, options_.allowed_batch_sizes, options_.disable_padding);
+  if (batch_down_size == batch_size) {
+    return;  // Can't batch down (e.g. no smaller batch size available).
+  }
+
+  batch.TryTrimToNewSize(batch_down_size, out_trimmed_tasks);
 }
 
 template <typename TaskType>

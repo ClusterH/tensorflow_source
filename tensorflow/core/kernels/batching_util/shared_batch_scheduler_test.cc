@@ -25,6 +25,7 @@ limitations under the License.
 
 #include "absl/base/call_once.h"
 #include "absl/container/fixed_array.h"
+#include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/time/time.h"
 #include "tensorflow/core/kernels/batching_util/batch_scheduler.h"
@@ -32,12 +33,14 @@ limitations under the License.
 #include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/cpu_info.h"
+#include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/status_matchers.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
+#include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/protobuf/error_codes.pb.h"
 #include "tsl/lib/core/status_test_util.h"
 #include "tsl/platform/criticality.h"
@@ -240,6 +243,16 @@ class SharedBatchSchedulerTest
   }
 
   bool enable_lazy_split() const override { return std::get<1>(GetParam()); }
+
+  // To be used for BatchPolicy tests only. Declared in the test fixture for
+  // a single reason: to able to access a proper CreateQueueOptions. Otherwise
+  // it's just a helper function for those tests.
+  //
+  // See a proper documentation at the function definition site.
+  void BatchPaddingPolicyTestLogic(std::vector<int32> allowed_batch_sizes,
+                                   BatchPaddingPolicy batch_padding_policy,
+                                   std::vector<int> task_sizes_to_schedule,
+                                   std::vector<int> expected_batch_sizes);
 };
 
 TEST_P(SharedBatchSchedulerTest, Basic) {
@@ -1052,6 +1065,171 @@ TEST_P(SharedBatchSchedulerTest, ZeroQueueRewrittenToOneQueue) {
   }
 }
 
+// A helper function for the following BatchPaddingPolicy tests.
+//
+// The function contains basically all the logic of each of those tests, with
+// some things being parametrized. In particular, this function will:
+//
+//   1. Create a SharedBatchScheduler with the specified allowed_batch_sizes and
+//      batch_padding_policy.
+//   2. Add to the scheduler several tasks of potentially different sizes, as
+//      defined by task_sizes_to_schedule.
+//   3. Wait for one batch timeout interval.
+//   4. Ensure that the batch callback was called with the expected batch size.
+//      (as defined by the first element of expected_batch_sizes).
+//   5. Possibly expect a second, leftover batch to be scheduled after the
+//      destruction of the scheduler (its size is defined by the optional second
+//      element of expected_batch_sizes).
+void SharedBatchSchedulerTest::BatchPaddingPolicyTestLogic(
+    std::vector<int32> allowed_batch_sizes,
+    BatchPaddingPolicy batch_padding_policy,
+    std::vector<int> task_sizes_to_schedule,
+    std::vector<int> expected_batch_sizes) {
+  CHECK_GE(expected_batch_sizes.size(), 1);
+  CHECK_LE(expected_batch_sizes.size(), 2);
+
+  // Set up a fake clock, which only advances when we explicitly tell it to.
+  test_util::FakeClockEnv env(Env::Default());
+  Notification start_teardown, stop_teardown;
+  std::unique_ptr<Thread> teardown_thread =
+      CreateFakeClockAdvancerThread(&env, &start_teardown, &stop_teardown);
+
+  {
+    Notification first_batch_processed;
+    Notification second_batch_processed;
+    auto callback =
+        [&](std::unique_ptr<Batch<FakeTask>> batch) {
+          if (!first_batch_processed.HasBeenNotified()) {
+            // This is the main expectation of the test.
+            EXPECT_EQ(batch->size(), expected_batch_sizes.at(0));
+
+            first_batch_processed.Notify();
+            return;
+          }
+
+          if (expected_batch_sizes.size() > 1 &&
+              !second_batch_processed.HasBeenNotified()) {
+            // Leftovers after the first batch, to be invoked on the destruction
+            // of the batch scheduler.
+            EXPECT_EQ(batch->size(), expected_batch_sizes.at(1));
+
+            second_batch_processed.Notify();
+            return;
+          }
+
+          EXPECT_TRUE(false)
+              << "Batch callback must not be invoked more than expected";
+        };
+
+    auto scheduler = CreateSharedBatchScheduler(1, &env);
+
+    QueueOptions options =
+        CreateQueueOptions(/* max_execution_batch_size= */ 10,
+                           /* input_batch_size_limit= */ 10,
+                           /* batch_timeout_micros= */ 10,
+                           /* max_enqueued_batches= */ 10);
+
+    // The most interesting options for this test.
+    options.allowed_batch_sizes = allowed_batch_sizes;
+    options.batch_padding_policy = batch_padding_policy;
+
+    auto queue = CreateQueue(scheduler, options, callback);
+
+    // These are actions we test: we schedule some tasks and ensure the
+    // scheduler calls the callback after a batch timeout has expired.
+    {
+      for (int task_size : task_sizes_to_schedule) {
+        TF_ASSERT_OK(ScheduleTask(task_size, queue.get()));
+      }
+
+      env.AdvanceByMicroseconds(options.batch_timeout_micros);
+
+      first_batch_processed.WaitForNotification();
+    }
+
+    start_teardown.Notify();
+  }
+  stop_teardown.Notify();
+}
+
+TEST_P(SharedBatchSchedulerTest, BatchPaddingPolicyPadUp) {
+  BatchPaddingPolicyTestLogic(
+      /* allowed_batch_sizes= */ {1, 2, 4, 8},
+      /* batch_padding_policy= */ BatchPaddingPolicy::kPadUp,
+      /* task_sizes_to_schedule= */ {1, 1, 1},  // Add 3 tasks of size 1.
+      /* expected_batch_sizes= */
+      {
+          // The batch callback must be called with the batch size of 3 (for the
+          // batch resource to then pad it to the next allowed batch size, thus
+          // ending up in a pad-up behavior.)
+          3,
+      });
+}
+
+TEST_P(SharedBatchSchedulerTest, BatchPaddingPolicyBatchDown) {
+  if (enable_lazy_split()) {
+    GTEST_SKIP()
+        << "BatchPaddingPolicy::kBatchDown is not supported for lazy split.";
+  }
+
+  BatchPaddingPolicyTestLogic(
+      /* allowed_batch_sizes= */ {1, 2, 4, 8},
+      /* batch_padding_policy= */ BatchPaddingPolicy::kBatchDown,
+      /* task_sizes_to_schedule= */ {1, 1, 1},  // Add three tasks of size 1.
+      /* expected_batch_sizes= */
+      {
+          // The scheduler should trim the batch to a smaller allowed size which
+          // requires no padding.
+          2,
+          // Leftover batch, scheduled after the destruction of the scheduler.
+          1,
+      });
+}
+
+TEST_P(SharedBatchSchedulerTest, BatchPaddingPolicyBatchDownDoesNotSplitTasks) {
+  BatchPaddingPolicyTestLogic(
+      /* allowed_batch_sizes= */ {1, 2, 4, 8},
+      /* batch_padding_policy= */ BatchPaddingPolicy::kBatchDown,
+      /* task_sizes_to_schedule= */ {1, 2},  // Add tasks for size 3, but the
+                                             // second task is large and will
+                                             // have to be split if doing batch-
+                                             // down.
+      /* expected_batch_sizes= */
+      {
+          // The batch callback must be called with the batch size of 3 and NOT
+          // be batched down to 2 the do the fact that the current
+          // implementation doesn's support splitting large tasks.
+          3,
+      });
+}
+
+TEST_P(SharedBatchSchedulerTest,
+       BatchPaddingPolicyBatchDownDoesNothingWhenTheBatchSizeIsAlreadyAllowed) {
+  BatchPaddingPolicyTestLogic(
+      /* allowed_batch_sizes= */ {1, 2, 4, 8},
+      /* batch_padding_policy= */ BatchPaddingPolicy::kBatchDown,
+      /* task_sizes_to_schedule= */ {1, 1, 1, 1},  // Add 4 tasks of size 1.
+      /* expected_batch_sizes= */
+      {
+          // The batch callback must be called with full batch because it's
+          // already an allowed size.
+          4,
+      });
+}
+
+TEST_P(SharedBatchSchedulerTest,
+       BatchPaddingPolicyBatchDownDoesNothingWhenNoSmallerAllowedSize) {
+  BatchPaddingPolicyTestLogic(
+      /* allowed_batch_sizes= */ {4, 8},
+      /* batch_padding_policy= */ BatchPaddingPolicy::kBatchDown,
+      /* task_sizes_to_schedule= */ {1, 1, 1},  // Add 3 tasks of size 1.
+      /* expected_batch_sizes= */
+      {
+          // Can't batch down because there is no smaller allowed size.
+          3,
+      });
+}
+
 // TODO(b/161857471):
 // Add test coverage when input-split and no-split returns differently.
 INSTANTIATE_TEST_SUITE_P(
@@ -1112,7 +1290,8 @@ TEST_P(SharedBatchSchedulerPriorityTest,
         testing::StatusIs(
             absl::StatusCode::kUnavailable,
             HasSubstr(
-                "The low priority task queue to which this task was submitted "
+                "The low priority task queue to which this task was "
+                "submitted "
                 "has max_execution_batch_size=1 and the task size is 10")));
   }
   EXPECT_FALSE(queue_callback_called);
@@ -1531,8 +1710,8 @@ TEST_P(SharedBatchSchedulerPriorityPolicyTest,
         CreateQueue(scheduler, queue_options, queue_callback);
 
     // Submit tasks to the queue. The high priority batch is padded by the low
-    // priority tasks up to 10, which is the max batch size because the allowed
-    // batch sizes are missing.
+    // priority tasks up to 10, which is the max batch size because the
+    // allowed batch sizes are missing.
     TF_ASSERT_OK(ScheduleTask(1, queue.get(),
                               tsl::criticality::Criticality::kCriticalPlus));
     TF_ASSERT_OK(ScheduleTask(3, queue.get(),
