@@ -727,7 +727,14 @@ Status TensorHandle::RemoteAddress(const Device* d, const bool wait_until_ready,
   }
 
   if (remote_data != nullptr) {
-    return remote_data->OpIdAndOutputNum(wait_until_ready, op_id, output_num);
+    auto status =
+        remote_data->OpIdAndOutputNum(wait_until_ready, op_id, output_num);
+    if (!status.ok()) {
+      return errors::Internal(
+          "Remote address looked up from remote mirrors found to be poisoned");
+    } else {
+      return absl::OkStatus();
+    }
   }
 
   if (Type() != REMOTE) {
@@ -735,7 +742,13 @@ Status TensorHandle::RemoteAddress(const Device* d, const bool wait_until_ready,
   }
 
   auto& data = std::get<RemoteTensorHandleData>(data_);
-  return data.OpIdAndOutputNum(wait_until_ready, op_id, output_num);
+  auto status = data.OpIdAndOutputNum(wait_until_ready, op_id, output_num);
+  if (!status.ok()) {
+    return errors::Internal(
+        "Remote address looked up from remote data found to be poisoned");
+  } else {
+    return absl::OkStatus();
+  }
 }
 
 bool TensorHandle::HasRemoteMirror(const Device* d,
