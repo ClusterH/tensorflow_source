@@ -1100,6 +1100,36 @@ PJRT_DEFINE_STRUCT_TRAITS(PJRT_Memory_AddressableByDevices_Args, num_devices);
 typedef PJRT_Error* PJRT_Memory_AddressableByDevices(
     PJRT_Memory_AddressableByDevices_Args* args);
 
+// ------------------------------- Execute Context -----------------------------
+
+// An opaque context passed to an execution that may be used to supply
+// additional arguments to a derived class of PJRT_Executable. It is a caller
+// responsibility to ensure that the context is valid for the duration of the
+// execution.
+typedef struct PJRT_ExecuteContext PJRT_ExecuteContext;
+
+struct PJRT_ExecuteContext_Create_Args {
+  size_t struct_size;
+  PJRT_Extension_Base* extension_start;
+  PJRT_ExecuteContext* context;  // out
+};
+PJRT_DEFINE_STRUCT_TRAITS(PJRT_ExecuteContext_Create_Args, context);
+
+// Creates an execute context.
+typedef PJRT_Error* PJRT_ExecuteContext_Create(
+    PJRT_ExecuteContext_Create_Args* args);
+
+struct PJRT_ExecuteContext_Destroy_Args {
+  size_t struct_size;
+  PJRT_Extension_Base* extension_start;
+  PJRT_ExecuteContext* context;
+};
+PJRT_DEFINE_STRUCT_TRAITS(PJRT_ExecuteContext_Destroy_Args, context);
+
+// Frees an execute context. `context` can be nullptr.
+typedef PJRT_Error* PJRT_ExecuteContext_Destroy(
+    PJRT_ExecuteContext_Destroy_Args* args);
+
 // ------------------------------- Executables ---------------------------------
 
 struct PJRT_Executable_Destroy_Args {
@@ -2133,6 +2163,9 @@ typedef struct {
   _PJRT_API_STRUCT_FIELD(PJRT_Memory_DebugString);
   _PJRT_API_STRUCT_FIELD(PJRT_Memory_ToString);
   _PJRT_API_STRUCT_FIELD(PJRT_Memory_AddressableByDevices);
+
+  _PJRT_API_STRUCT_FIELD(PJRT_ExecuteContext_Create);
+  _PJRT_API_STRUCT_FIELD(PJRT_ExecuteContext_Destroy);
 
   _PJRT_API_STRUCT_FIELD(PJRT_Executable_Destroy);
   _PJRT_API_STRUCT_FIELD(PJRT_Executable_Name);
