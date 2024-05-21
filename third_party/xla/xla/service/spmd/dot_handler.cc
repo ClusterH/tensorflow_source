@@ -183,6 +183,11 @@ void UpdateDDNums(DotDimensionNumbers* new_ddnums, int64_t reshaped_dim,
         }
         if (add_reshaped_dim) {
           dims->Add(reshaped_dim);
+          // Sort the dimensions (assumes they were sorted before the addition)
+          for (int64_t i = dims->size() - 1;
+               i >= 1 && dims->at(i) < dims->at(i - 1); i--) {
+            dims->SwapElements(i - 1, i);
+          }
         }
       };
 
@@ -710,6 +715,8 @@ std::optional<WindowedEinsumConfig> GetWindowedEinsumConfiguration(
           /*is_ag_einsum=*/true};
     }
     if (rhs_batch_partitions == num_partitions) {
+      if (original_hlo != nullptr && original_hlo->name() == "dot.1104")
+        LOG(INFO) << "SEHER X1: " << rhs_batch_partitions;
       return WindowedEinsumConfig{
           /*windowed_op=*/WindowedEinsumOperand::RHS,
           /*windowed_at_contracting_dims*/ false,
@@ -870,6 +877,13 @@ absl::StatusOr<HloInstruction*> EmitWindowedDotGeneral(
   }
   // Mask the padding area of the windowed operand with zero if there is
   // uneven partitioning.
+  if (original_hlo->name() == "dot.1104")
+    LOG(INFO) << "SEHER windowed_op_is_lhs: " << windowed_op_is_lhs
+              << " windowed_at_contracting_dims: "
+              << windowed_at_contracting_dims
+              << " operands_sharded_at_contracting_dims: "
+              << operands_sharded_at_contracting_dims
+              << " windowed_at_batch_dims: " << windowed_at_batch_dims;
   if (windowed_at_contracting_dims) {
     auto& to_mask = windowed_op_is_lhs ? lhs : rhs;
     to_mask = to_mask.PadWithZero();
@@ -899,6 +913,9 @@ absl::StatusOr<HloInstruction*> EmitWindowedDotGeneral(
                          ? &*output_sharding_transposed_to_match_rhs
                          : &*output_sharding_transposed_to_match_lhs;
   } else if (windowed_at_contracting_dims || windowed_at_batch_dims) {
+    if (original_hlo->name() == "dot.1104")
+      LOG(INFO) << "SEHER entered windowed_at_batch_dims with "
+                << windowed_op_is_lhs;
     slice_sharding = windowed_op_is_lhs
                          ? &*lhs_sharding_transposed_to_match_rhs
                          : &*rhs_sharding_transposed_to_match_lhs;
@@ -907,6 +924,8 @@ absl::StatusOr<HloInstruction*> EmitWindowedDotGeneral(
                          ? &*lhs_sharding_transposed_to_match_output
                          : &*rhs_sharding_transposed_to_match_output;
   }
+  if (original_hlo->name() == "dot.1104")
+    LOG(INFO) << "SEHER slice_sharding: " << slice_sharding->ToString();
   CHECK_EQ(Product(slice_sharding->tile_assignment().dimensions()),
            num_partitions);
   int64_t slice_sharding_dim = -1;
@@ -932,6 +951,9 @@ absl::StatusOr<HloInstruction*> EmitWindowedDotGeneral(
     rhs_concat_dim = windowed_op_is_lhs
                          ? slice_sharding_dim
                          : indices_map.lhs_to_rhs_indices[slice_sharding_dim];
+    if (original_hlo->name() == "dot.1104")
+      LOG(INFO) << "SEHER lhs_concat_dim: " << lhs_concat_dim
+                << " rhs_concat_dim: " << rhs_concat_dim;
   } else {
     if (windowed_op_is_lhs) {
       lhs_concat_dim = indices_map.output_to_lhs_indices[slice_sharding_dim];
@@ -961,6 +983,8 @@ absl::StatusOr<HloInstruction*> EmitWindowedDotGeneral(
       rhs_hlo = b->AddInstruction(HloInstruction::CreateReshape(
           ShapeUtil::MakeShape(rhs_hlo->shape().element_type(), reshaped_dims),
           rhs_hlo));
+      if (original_hlo->name() == "dot.1104")
+        LOG(INFO) << "SEHER rhs reshaped: " << rhs_hlo->ToString();
     }
   }
 
@@ -1039,7 +1063,8 @@ absl::StatusOr<HloInstruction*> EmitWindowedDotGeneral(
     if (original_hlo->opcode() == HloOpcode::kDot) {
       new_ddnums = original_hlo->dot_dimension_numbers();
     }
-
+    if (original_hlo->name() == "dot.1104")
+      LOG(INFO) << "SEHER original ddnums: " << new_ddnums.DebugString();
     auto dot_lhs = l;
     auto dot_rhs = r;
     auto original_dot_lhs = l;
@@ -1190,7 +1215,8 @@ absl::StatusOr<HloInstruction*> EmitWindowedDotGeneral(
         }
       }
     }
-
+    if (original_hlo->name() == "dot.1104")
+      LOG(INFO) << "SEHER updated ddnums: " << new_ddnums.DebugString();
     auto ccw_dot_lhs = l;
     auto ccw_dot_rhs = r;
     auto cw_dot_lhs = windowed_op_is_lhs ? extra_inout : l;
@@ -1245,12 +1271,22 @@ absl::StatusOr<HloInstruction*> EmitWindowedDotGeneral(
     // Generate the correct shape of the new dot/conv.
     auto original_sharded_dot_shape = original_dot->shape();
     auto new_dot_shape = original_sharded_dot_shape;
+    if (original_hlo->name() == "dot.1104") {
+      LOG(INFO) << "SEHER original hlo: " << original_hlo->ToString();
+      LOG(INFO) << "SEHER original dot: " << original_dot->ToString();
+      LOG(INFO) << "windowed_at_contracting_dims: "
+                << windowed_at_contracting_dims;
+      LOG(INFO) << "lhs_concat_dim: " << lhs_concat_dim;
+    }
     std::vector<int64_t> new_dims(new_dot_shape.dimensions().begin(),
                                   new_dot_shape.dimensions().end());
     if (!windowed_at_contracting_dims) {
       auto slice_dim = lhs_concat_dim != -1
                            ? indices_map.lhs_to_output_indices[lhs_concat_dim]
                            : indices_map.rhs_to_output_indices[rhs_concat_dim];
+      if (original_hlo->name() == "dot.1104") {
+        LOG(INFO) << "SEHER slice_dim: " << slice_dim;
+      }
       new_dims[slice_dim] /= 2;
       new_dims.insert(new_dims.begin() + slice_dim, 2);
     } else if (original_hlo->opcode() != HloOpcode::kDot) {
@@ -1258,6 +1294,9 @@ absl::StatusOr<HloInstruction*> EmitWindowedDotGeneral(
     }
     new_dot_shape =
         ShapeUtil::MakeShape(original_hlo->shape().element_type(), new_dims);
+    if (original_hlo->name() == "dot.1104") {
+      LOG(INFO) << "SEHER new dot shape: " << new_dot_shape.ToString();
+    }
 
     HloInstruction* dot;
     if (original_hlo->opcode() == HloOpcode::kDot) {
@@ -4286,7 +4325,7 @@ absl::Status SpmdPartitioningVisitor::HandleDotHelper(
                    num_partitions_, create_sharded_dot, conv_window, module_,
                    hlo, options_, &b_, &windowed_dot_general_loops_, this));
   SetPartitionedHlo(hlo, [&] { return partitioned_dot; });
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 namespace {
@@ -4370,7 +4409,7 @@ absl::Status SinkInputNodesIntoWindowedDotGeneralLoopOnContractingDimensions(
   auto to_sink = std::move(input_nodes.first);
   auto new_operands = std::move(input_nodes.second);
   if (to_sink.empty()) {
-    return OkStatus();
+    return absl::OkStatus();
   }
   auto computation = loop->parent();
   // Replace the old operand with a tuple of the found small operands.
@@ -4452,7 +4491,7 @@ absl::Status SinkInputNodesIntoWindowedDotGeneralLoopOnContractingDimensions(
       TF_RETURN_IF_ERROR(body->RemoveInstruction(ou));
     }
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 // Checks a condition holds true for all recursive operands of an hlo.
@@ -4591,7 +4630,7 @@ absl::Status MoveUsersIntoWindowedDotGeneralLoopOnNonContractingDimensions(
   // If nothing is found, to_move could contain only original_output, or
   // cleared by the above code.
   if (to_move.size() <= 1) {
-    return OkStatus();
+    return absl::OkStatus();
   }
 
   // If there is a reduce that's dependent of another reduce, then we can't do
@@ -4604,7 +4643,7 @@ absl::Status MoveUsersIntoWindowedDotGeneralLoopOnNonContractingDimensions(
       for (const HloInstruction* other_reduce : reduce_outputs) {
         if (reduce != other_reduce &&
             reachability->IsReachable(reduce, other_reduce)) {
-          return OkStatus();
+          return absl::OkStatus();
         }
       }
     }
@@ -4615,7 +4654,7 @@ absl::Status MoveUsersIntoWindowedDotGeneralLoopOnNonContractingDimensions(
         return !absl::c_linear_search(reduce_outputs, inst);
       };
       if (!CheckOperandsRecursive(reduce, reduce_outputs_do_not_contain)) {
-        return OkStatus();
+        return absl::OkStatus();
       }
     }
   }
@@ -4949,7 +4988,7 @@ absl::Status MoveUsersIntoWindowedDotGeneralLoopOnNonContractingDimensions(
     TF_RETURN_IF_ERROR(
         computation->RemoveInstructionAndUnusedOperands(reduce_outputs[i]));
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace
@@ -4978,7 +5017,7 @@ absl::Status SpmdPartitioningVisitor::DoCodeMotionForWindowedDotGeneralLoops(
               loop.while_loop, options));
     }
   }
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace spmd
