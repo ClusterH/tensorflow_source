@@ -15,10 +15,25 @@ limitations under the License.
 
 #include "tensorflow/core/kernels/batching_util/batch_scheduler.h"
 
+#include <string>
+
+#include "absl/flags/flag.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
+
+ABSL_FLAG(std::string, tensorflow_batch_padding_policy, "PAD_UP",
+          "The policy that a batch schduler is using when deciding what to do "
+          "when, say, 18 requests need to be batched, but only 16 and 32 batch "
+          "sizes are allowed. The following options are available. PAD_UP: pad "
+          "to size 32. BATCH_DOWN: schedule a batch of size 16 and leave 2 "
+          "requests in the batch buffer. MINIMIZE_TPU_COST_PER_REQUEST: a "
+          "smarter greedy policy that chooses to either PAD_UP or BATCH_DOWN "
+          "so as to minimize the TPU costs per real request. In this case, it "
+          "would compare (batch_16_cost / 16) and (batch_32_cost / 18). "
+          "WARNING: not all batch schedulers might support this option.");
 
 namespace tensorflow {
 namespace serving {
@@ -36,6 +51,23 @@ absl::StatusOr<MixedPriorityBatchingPolicy> GetMixedPriorityBatchingPolicy(
   }
   return absl::InvalidArgumentError(absl::StrFormat(
       "Unknown mixed priority batching policy: %s", attr_value));
+}
+
+BatchPaddingPolicy GetBatchPaddingPolicy() {
+  std::string str = absl::GetFlag(FLAGS_tensorflow_batch_padding_policy);
+
+  if (str == "PAD_UP") {
+    return BatchPaddingPolicy::kPadUp;
+  } else if (str == "BATCH_DOWN") {
+    return BatchPaddingPolicy::kBatchDown;
+  } else if (str == "MINIMIZE_TPU_COST_PER_REQUEST") {
+    return BatchPaddingPolicy::kMinimizeTpuCostPerRequest;
+  } else {
+    LOG(FATAL) << "Unknown enum flag value --"  // Crash ok
+               << FLAGS_tensorflow_batch_padding_policy.Name() << "=" << str
+               << ". Here is the flag help: "
+               << FLAGS_tensorflow_batch_padding_policy.Help();
+  }
 }
 
 }  // namespace serving

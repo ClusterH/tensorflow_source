@@ -100,6 +100,8 @@ cc_library(
         "//tensorflow/core/lib/core:status",
         "//tensorflow/core/platform:thread_annotations",
         "//tensorflow/core/profiler/lib:traceme",
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:string_view",
         "@local_tsl//tsl/platform:criticality",
@@ -113,6 +115,9 @@ cc_library(
     deps = [
         "//tensorflow/core:lib",
         "//tensorflow/core/profiler/lib:traceme",
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:str_format",
@@ -127,6 +132,7 @@ cc_library(
     hdrs = ["batch_scheduler_utils.h"],
     deps = [
         "//tensorflow/core:portable_gif_internal",
+        "@com_google_absl//absl/algorithm:container",
     ],
 )
 
@@ -186,6 +192,7 @@ cc_library(
         "//tensorflow/core/profiler/lib:context_types_hdrs",
         "//tensorflow/core/profiler/lib:traceme",
         "//tensorflow/core/profiler/lib:traceme_encode",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings:str_format",
@@ -208,6 +215,7 @@ cc_library(
         "//tensorflow/core/profiler/lib:context_types_hdrs",
         "//tensorflow/core/profiler/lib:traceme",
         "//tensorflow/core/profiler/lib:traceme_encode",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings:str_format",
@@ -232,6 +240,7 @@ tf_cc_test(
         "//tensorflow/core/platform:status_matchers",
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/container:fixed_array",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/time",
     ],
