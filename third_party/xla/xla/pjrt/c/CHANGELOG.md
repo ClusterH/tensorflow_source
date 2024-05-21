@@ -2,6 +2,8 @@
 
 ## 0.51
 * Added ``PJRT_Extension_Type::PJRT_Extension_Type_Layouts``.
+* Added ``PJRT_ExecuteContext`` struct corresponding to ``xla::ExecuteContext``,
+  and an API to add user data that will be forwarded to FFI handlers.
 
 ## 0.50 (Apr 26, 2024)
 * Added a new type ``PJRT_Buffer_Type_TOKEN`` to ``PJRT_Buffer_Type``.

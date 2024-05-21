@@ -42,6 +42,7 @@ limitations under the License.
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
 #include "mlir/IR/OwningOpRef.h"  // from @llvm-project
 #include "xla/client/xla_computation.h"
+#include "xla/ffi/execution_context.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/layout.h"
 #include "xla/literal.h"
@@ -993,6 +994,39 @@ PJRT_Error* PJRT_Memory_AddressableByDevices(
       PJRT_Memory_AddressableByDevices_Args_STRUCT_SIZE, args->struct_size));
   args->devices = args->memory->devices.data();
   args->num_devices = args->memory->devices.size();
+  return nullptr;
+}
+
+// ------------------------------- Execute Context -----------------------------
+
+PJRT_Error* PJRT_ExecuteContext_Destroy(
+    PJRT_ExecuteContext_Destroy_Args* args) {
+  PJRT_RETURN_IF_ERROR(ActualStructSizeIsGreaterOrEqual(
+      "PJRT_ExecuteContext_Destroy_Args",
+      PJRT_ExecuteContext_Destroy_Args_STRUCT_SIZE, args->struct_size));
+  delete args->context;
+  return nullptr;
+}
+
+PJRT_Error* PJRT_ExecuteContext_UserData_Add(
+    PJRT_ExecuteContext_UserData_Add_Args* args) {
+  PJRT_RETURN_IF_ERROR(ActualStructSizeIsGreaterOrEqual(
+      "PJRT_ExecuteContext_UserData_Add_Args",
+      PJRT_ExecuteContext_UserData_Add_Args_STRUCT_SIZE, args->struct_size));
+
+  if (args->context == nullptr) {
+    return new PJRT_Error{absl::InvalidArgumentError(
+        "Execute context must be not nullptr to add any user data to it.")};
+  }
+
+  if (args->type != PJRT_ExecuteContext_UserData_Type_FFI) {
+    return new PJRT_Error{absl::InvalidArgumentError(
+        absl::StrCat("Unsupported user data type ", args->type))};
+  }
+
+  xla::ffi::ExecutionContext::TypeId type_id(args->ffi.type_id);
+  PJRT_RETURN_IF_ERROR(args->context->execute_context->ffi_context().Insert(
+      type_id, args->ffi.user_data, args->ffi.deleter));
   return nullptr;
 }
 
@@ -2281,6 +2315,13 @@ PJRT_Client* CreateWrapperClient(std::unique_ptr<xla::PjRtClient> cpp_client) {
   return c_client;
 }
 
+PJRT_ExecuteContext* CreateWrapperExecuteContext(
+    std::unique_ptr<xla::ExecuteContext> cpp_execute_context) {
+  PJRT_ExecuteContext* execute_context =
+      new PJRT_ExecuteContext{std::move(cpp_execute_context)};
+  return execute_context;
+}
+
 PJRT_TopologyDescription* CreateWrapperDeviceTopology(
     const xla::PjRtTopologyDescription* cpp_topology) {
   PJRT_TopologyDescription* c_topology =
@@ -2329,6 +2370,7 @@ PJRT_LoadedExecutable::PJRT_LoadedExecutable(
 namespace pjrt {
 
 PJRT_Api CreatePjrtApi(PJRT_Client_Create* create_fn,
+                       PJRT_ExecuteContext_Create* execute_context_create_fn,
                        PJRT_TopologyDescription_Create* topology_create_fn,
                        PJRT_Plugin_Initialize* plugin_initialize_fn,
                        PJRT_Extension_Base* extension_start,
@@ -2398,6 +2440,11 @@ PJRT_Api CreatePjrtApi(PJRT_Client_Create* create_fn,
       /*PJRT_Memory_ToString=*/pjrt::PJRT_Memory_ToString,
       /*PJRT_Memory_AddressableByDevices=*/
       pjrt::PJRT_Memory_AddressableByDevices,
+
+      /*PJRT_ExecuteContext_Create=*/execute_context_create_fn,
+      /*PJRT_ExecuteContext_Destroy=*/pjrt::PJRT_ExecuteContext_Destroy,
+      /*PJRT_ExecuteContext_UserData_Add=*/
+      pjrt::PJRT_ExecuteContext_UserData_Add,
 
       /*PJRT_Executable_Destroy=*/pjrt::PJRT_Executable_Destroy,
       /*PJRT_Executable_Name=*/pjrt::PJRT_Executable_Name,

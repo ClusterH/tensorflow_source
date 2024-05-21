@@ -20,7 +20,6 @@ limitations under the License.
 #include <memory>
 #include <numeric>
 #include <string>
-#include <string_view>
 #include <thread>  // NOLINT(build/c++11)
 #include <utility>
 #include <variant>
@@ -31,11 +30,8 @@ limitations under the License.
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/str_cat.h"
-#include "absl/synchronization/mutex.h"
-#include "absl/time/clock.h"
-#include "absl/time/time.h"
 #include "xla/ffi/api/ffi.h"
+#include "xla/ffi/execution_context.h"
 #include "xla/ffi/ffi_api.h"
 #include "xla/literal.h"
 #include "xla/literal_util.h"
@@ -46,14 +42,12 @@ limitations under the License.
 #include "xla/pjrt/c/pjrt_c_api_test_base.h"
 #include "xla/pjrt/c/pjrt_c_api_wrapper_impl.h"
 #include "xla/pjrt/distributed/in_memory_key_value_store.h"
-#include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_common.h"
 #include "xla/pjrt/pjrt_future.h"
 #include "xla/service/custom_call_target_registry.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/status.h"
-#include "xla/statusor.h"
 #include "xla/stream_executor/gpu/gpu_init.h"
 #include "xla/tests/literal_test_util.h"
 #include "tsl/platform/status.h"
@@ -157,6 +151,41 @@ TEST_F(PjrtCApiGpuTest, CreateViewOfDeviceBuffer) {
   std::iota(float_data.begin(), float_data.end(), 41.0f);
   EXPECT_TRUE(xla::LiteralTestUtil::Equal(
       xla::LiteralUtil::CreateR1<float>(float_data), *literal));
+}
+
+TEST_F(PjrtCApiGpuTest, CreateAndDestroyExecuteContext) {
+  PJRT_ExecuteContext_Create_Args create_arg;
+  create_arg.struct_size = PJRT_ExecuteContext_Create_Args_STRUCT_SIZE;
+  create_arg.extension_start = nullptr;
+  create_arg.context = nullptr;
+
+  EXPECT_EQ(api_->PJRT_ExecuteContext_Create(&create_arg), nullptr);
+  EXPECT_NE(create_arg.context, nullptr);
+
+  std::string user_data = "user_data";
+
+  PJRT_ExecuteContext_UserData_Add_Args add_args;
+  add_args.struct_size = PJRT_ExecuteContext_UserData_Add_Args_STRUCT_SIZE;
+  add_args.extension_start = nullptr;
+  add_args.type = PJRT_ExecuteContext_UserData_Type_FFI;
+  add_args.ffi.type_id = 42;
+  add_args.ffi.user_data = &user_data;
+  add_args.ffi.deleter = nullptr;
+  add_args.context = create_arg.context;
+  EXPECT_EQ(api_->PJRT_ExecuteContext_UserData_Add(&add_args), nullptr);
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto lookup_user_data,
+      create_arg.context->execute_context->ffi_context().Lookup(
+          xla::ffi::ExecutionContext::TypeId(42)));
+  EXPECT_EQ(lookup_user_data, &user_data);
+
+  PJRT_ExecuteContext_Destroy_Args destroy_args;
+  destroy_args.struct_size = PJRT_Error_Destroy_Args_STRUCT_SIZE;
+  destroy_args.extension_start = nullptr;
+  destroy_args.context = create_arg.context;
+
+  api_->PJRT_ExecuteContext_Destroy(&destroy_args);
 }
 
 absl::StatusOr<PJRT_Client_Create_Args> BuildCreateArg(

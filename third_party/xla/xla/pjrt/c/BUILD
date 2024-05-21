@@ -96,6 +96,7 @@ cc_library(
         "//xla:xla_data_proto_cc",
         "//xla:xla_proto_cc",
         "//xla/client:xla_computation",
+        "//xla/ffi:execution_context",
         "//xla/hlo/ir:hlo",
         "//xla/pjrt:compile_options_proto_cc",
         "//xla/pjrt:mlir_to_hlo",
@@ -176,6 +177,7 @@ cc_library(
         ":pjrt_c_api_wrapper_impl",
         "//xla/pjrt:pjrt_client",
         "//xla/pjrt/cpu:cpu_client",
+        "@com_google_absl//absl/status",
     ],
 )
 
@@ -236,6 +238,7 @@ cc_library(
         "//xla/pjrt:pjrt_common",
         "//xla/pjrt:pjrt_compiler",
         "//xla/pjrt:pjrt_device_description",
+        "//xla/pjrt:pjrt_executable",
         "//xla/pjrt/gpu:gpu_helpers",
         "//xla/pjrt/gpu:se_gpu_pjrt_client",
         "//xla/pjrt/gpu:se_gpu_pjrt_compiler",  # To register GPU AOT compiler
@@ -331,6 +334,7 @@ xla_cc_test(
         "//xla:shape_util",
         "//xla:status",
         "//xla:statusor",
+        "//xla/ffi:execution_context",
         "//xla/ffi:ffi_api",
         "//xla/ffi/api:ffi",
         "//xla/pjrt:pjrt_client",
