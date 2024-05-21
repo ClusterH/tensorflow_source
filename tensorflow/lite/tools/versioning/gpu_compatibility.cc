@@ -22,6 +22,7 @@ limitations under the License.
 #include "absl/strings/str_join.h"
 #include "tensorflow/lite/builtin_op_data.h"
 #include "tensorflow/lite/builtin_ops.h"
+#include "tensorflow/lite/c/c_api_types.h"
 #include "tensorflow/lite/tools/versioning/op_signature.h"
 
 namespace tflite {
@@ -458,6 +459,11 @@ absl::Status CheckAddMulBroadcastCompatibility(
                shorter_dims->at(1) == 1) {
       // Broadcasting 2D [1, 1] to 4D [1, x, y, z] works.
       is_broadcastable = true;
+    } else if (longer_dims->size() == 4 && shorter_dims->size() == 2 &&
+               longer_dims->at(0) == shorter_dims->at(0) &&
+               longer_dims->at(3) == shorter_dims->at(1)) {
+      // Broadcasting 2D [b, c] to 4D [b, x, y, c] works.
+      is_broadcastable = true;
     }
 
     if (!is_broadcastable) {
@@ -619,6 +625,12 @@ absl::Status CheckGpuDelegateCompatibility(const OpSignature& op_sig) {
               "doesn't "
               "support keep_num_dims.");
         }
+      }
+
+      if (tf_options->quantized_bias_type != kTfLiteNoType &&
+          tf_options->quantized_bias_type != kTfLiteFloat32) {
+        return absl::UnimplementedError(
+            "FullyConnected doesn't support quantized bias type.");
       }
       return absl::OkStatus();
     }
