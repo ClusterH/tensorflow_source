@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <gtest/gtest.h>
 #include "benchmark/benchmark.h"  // from @com_google_benchmark
+#include "tensorflow/lite/core/c/c_api_types.h"
 #include "tensorflow/lite/kernels/acceleration_test_util.h"
 #include "tensorflow/lite/kernels/acceleration_test_util_internal.h"
 #include "tensorflow/lite/kernels/test_delegate_providers.h"
@@ -79,6 +80,13 @@ std::string*
 )");
 
 void ValidateAcceleration(const SingleOpModel& model) {
+  // Note that the error `kTfLiteApplicationError` is accepted.
+  // We only want to check the delegate is working properly, so the error due
+  // to the incompatibility between the runtime and the delegate is not
+  // considered a failure here.
+  EXPECT_THAT(model.GetDelegateApplicationStatus().value_or(kTfLiteOk),
+              testing::AnyOf(kTfLiteOk, kTfLiteApplicationError));
+
   std::string test_id = GetCurrentTestId();
   const bool supported =
       GetAccelerationTestParam<DelegateTestSuiteAccelerationTestParams>(test_id)
@@ -135,9 +143,7 @@ bool InitKernelTest(int* argc, char** argv) {
   return true;
 }
 
-void DestroyKernelTest() {
-  DelegateTestSuiteAccelerationTestParams::Destroy();
-}
+void DestroyKernelTest() { DelegateTestSuiteAccelerationTestParams::Destroy(); }
 
 }  // namespace
 }  // namespace tflite
