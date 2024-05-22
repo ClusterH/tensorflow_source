@@ -58,10 +58,10 @@ bool ValidEmptyOutputShape(int64_t num_inputs, int64_t num_indices,
   return (num_inputs != 0 && num_indices != 0 && num_updates != 0);
 }
 
-template <typename Device, typename T, typename Index>
-class ScatterNdOp : public OpKernel {
+template <typename Device, typename T, typename Index, bool DropBadIndices>
+class ScatterNdOpBase : public OpKernel {
  public:
-  explicit ScatterNdOp(OpKernelConstruction* c) : OpKernel(c) {
+  explicit ScatterNdOpBase(OpKernelConstruction* c) : OpKernel(c) {
     const DataType dt = DataTypeToEnum<T>::v();
     const DataType index_t = DataTypeToEnum<Index>::v();
     OP_REQUIRES_OK(c, c->MatchSignature({index_t, dt, index_t}, {dt}));
@@ -127,111 +127,24 @@ class ScatterNdOp : public OpKernel {
 
     Tensor out;
     OP_REQUIRES_OK(
-        c, functor::DoScatterNd<Device, T, Index, scatter_nd_op::UpdateOp::ADD>(
-               c, indices, updates, shape, &out, true /*allocate*/));
+        c, functor::DoScatterNd<Device, T, Index, scatter_nd_op::UpdateOp::ADD,
+                                DropBadIndices>(c, indices, updates, shape,
+                                                &out, true /*allocate*/));
     c->set_output(0, out);
   }
 };
 
-template <typename Device, typename T, typename Index,
-          scatter_nd_op::UpdateOp op>
-class TensorScatterOp : public OpKernel {
- public:
-  explicit TensorScatterOp(OpKernelConstruction* c) : OpKernel(c) {
-    const DataType dt = DataTypeToEnum<T>::v();
-    const DataType index_t = DataTypeToEnum<Index>::v();
-    OP_REQUIRES_OK(c, c->MatchSignature({dt, index_t, dt}, {dt}));
-  }
-
-  void Compute(OpKernelContext* c) override {
-    const Tensor& input = c->input(0);
-    const Tensor& indices = c->input(1);
-    const Tensor& updates = c->input(2);
-
-    OP_REQUIRES(c, indices.shape().dims() >= 1,
-                errors::InvalidArgument(
-                    "Indices shape must have rank at least one. Found:",
-                    indices.shape().DebugString()));
-    OP_REQUIRES(c, updates.shape().dims() >= 1,
-                errors::InvalidArgument(
-                    "Updates shape must have rank at least one. Found:",
-                    updates.shape().DebugString()));
-
-    TensorShape shape = input.shape();
-
-    OP_REQUIRES(c,
-                ValidEmptyOutputShape(shape.num_elements(),
-                                      indices.shape().num_elements(),
-                                      updates.shape().num_elements()),
-                errors::InvalidArgument(
-                    "Indices and updates specified for empty output shape"));
-
-    const int64_t outer_dims = indices.shape().dims() - 1;
-
-    for (int i = 0; i < outer_dims; ++i) {
-      OP_REQUIRES(c, indices.shape().dim_size(i) == updates.shape().dim_size(i),
-                  errors::InvalidArgument(
-                      "Outer dimensions of indices and update must match. "
-                      "Indices shape: ",
-                      indices.shape().DebugString(),
-                      ", updates shape:", updates.shape().DebugString()));
-    }
-
-    const int64_t ix = indices.shape().dim_size(outer_dims);
-    OP_REQUIRES(
-        c, updates.shape().dims() - outer_dims == shape.dims() - ix,
-        errors::InvalidArgument("Inner dimensions of output shape must match "
-                                "inner dimensions of updates shape. Output: ",
-                                shape.DebugString(),
-                                " updates: ", updates.shape().DebugString()));
-    for (int i = 0; i + outer_dims < updates.shape().dims(); ++i) {
-      OP_REQUIRES(
-          c, updates.shape().dim_size(i + outer_dims) == shape.dim_size(ix + i),
-          errors::InvalidArgument(
-              "The inner ", shape.dims() - ix,
-              " dimensions of output.shape=", shape.DebugString(),
-              " must match the inner ", updates.shape().dims() - outer_dims,
-              " dimensions of updates.shape=", updates.shape().DebugString()));
-    }
-
-    AllocatorAttributes alloc_attr;
-    MemoryType memory_type = DEVICE_MEMORY;
-    if (std::is_same<Device, CPUDevice>::value) {
-      alloc_attr.set_on_host(true);
-      memory_type = HOST_MEMORY;
-    } else {
-      memory_type = DEVICE_MEMORY;
-    }
-    std::unique_ptr<Tensor> forwarded_input =
-        c->forward_input(0, 0, input.dtype(), shape, memory_type, alloc_attr);
-
-    if (forwarded_input == nullptr) {
-      // We were not able to forward the input, so we deep copy the tensor and
-      // set the output.
-      Tensor* out;
-      OP_REQUIRES_OK(c, c->allocate_output(0, input.shape(), &out));
-
-      OP_REQUIRES_OK(c, tensorflow::functor::DoCopy(c->eigen_device<Device>(),
-                                                    input, out));
-      OP_REQUIRES_OK(c,
-                     functor::DoScatterNd<Device, T, Index, op>(
-                         c, indices, updates, shape, out, false /*allocate*/));
-    } else {
-      // Output forwarded, so simply perform the scatter.
-      OP_REQUIRES_OK(c, functor::DoScatterNd<Device, T, Index, op>(
-                            c, indices, updates, shape, forwarded_input.get(),
-                            false /*allocate*/));
-
-      c->set_output(0, *forwarded_input);
-    }
-  }
-};
+template <typename Device, typename T, typename Index>
+using ScatterNdOp = ScatterNdOpBase<Device, T, Index, /*DropBadIndices=*/false>;
+template <typename Device, typename T, typename Index>
+using ScatterNdGpuCompatemplate =
+    ScatterNdOpBase<Device, T, Index, /*DropBadIndices=*/true>;
 
 template <typename Device, typename T, typename Index,
-          scatter_nd_op::UpdateOp op>
-class ScatterNdUpdateOp : public OpKernel {
+          scatter_nd_op::UpdateOp op, bool DropBadIndices>
+class ScatterNdUpdateOpBase : public OpKernel {
  public:
-  explicit ScatterNdUpdateOp(OpKernelConstruction* c) : OpKernel(c) {
+  explicit ScatterNdUpdateOpBase(OpKernelConstruction* c) : OpKernel(c) {
     const DataType dt = DataTypeToEnum<T>::v();
     const DataType dt_ref = DataTypeToEnum<T>::ref();
     const DataType index_t = DataTypeToEnum<Index>::v();
@@ -308,10 +221,19 @@ class ScatterNdUpdateOp : public OpKernel {
     }
 
     OP_REQUIRES_OK(
-        c, functor::DoScatterNd<Device, T, Index, op>(
+        c, functor::DoScatterNd<Device, T, Index, op, DropBadIndices>(
                c, indices, updates, params_shape, &params, false /*allocate*/));
   }
 };
+
+template <typename Device, typename T, typename Index,
+          scatter_nd_op::UpdateOp op>
+using ScatterNdUpdateOp =
+    ScatterNdUpdateOpBase<Device, T, Index, op, /*DropBadIndices=*/false>;
+template <typename Device, typename T, typename Index,
+          scatter_nd_op::UpdateOp op>
+using ScatterNdUpdateGpuCompatibleOp =
+    ScatterNdUpdateOpBase<Device, T, Index, op, /*DropBadIndices=*/true>;
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
@@ -878,7 +800,7 @@ class IndexFlattener {
 namespace {
 
 template <typename Device, typename T, typename Index,
-          scatter_nd_op::UpdateOp Op>
+          scatter_nd_op::UpdateOp Op, bool DROP_BAD_INDICES>
 Status DoScatterNdImpl(OpKernelContext* c, const Tensor& indices,
                        const Tensor& updates, const TensorShape& shape,
                        Tensor* out, bool allocate) {
@@ -919,16 +841,19 @@ Status DoScatterNdImpl(OpKernelContext* c, const Tensor& indices,
 
   if (shape.num_elements() > 0) {
     switch (slice_dim) {
-#define PARAMS_CASE(IXDIM)                                                  \
-  case IXDIM: {                                                             \
-    typename Eigen::array<Eigen::DenseIndex, IXDIM> output_shape_prefix;    \
-    for (int i = 0; i < IXDIM; ++i) {                                       \
-      output_shape_prefix[i] = shape.dim_size(i);                           \
-    }                                                                       \
-    functor::ScatterNdFunctor<Device, T, Index, Op, IXDIM> functor;         \
-    bad_i =                                                                 \
-        functor(c->eigen_device<Device>(), slice_size, output_shape_prefix, \
-                output_matrix, indices_flat, updates_flat, output_matrix);  \
+#define PARAMS_CASE(IXDIM)                                                   \
+  case IXDIM: {                                                              \
+    typename Eigen::array<Eigen::DenseIndex, IXDIM> output_shape_prefix;     \
+    for (int i = 0; i < IXDIM; ++i) {                                        \
+      output_shape_prefix[i] = shape.dim_size(i);                            \
+    }                                                                        \
+    constexpr bool drop_bad_indices =                                        \
+        DROP_BAD_INDICES || std::is_same<Device, GPUDevice>::value;          \
+    functor::ScatterNdFunctor<Device, T, Index, Op, IXDIM, drop_bad_indices> \
+        functor;                                                             \
+    bad_i =                                                                  \
+        functor(c->eigen_device<Device>(), slice_size, output_shape_prefix,  \
+                output_matrix, indices_flat, updates_flat, output_matrix);   \
   } break
       // TODO(simister): Re-enable this once binary size is under control.
       //      PARAMS_CASE(0);
@@ -946,6 +871,9 @@ Status DoScatterNdImpl(OpKernelContext* c, const Tensor& indices,
             "are currently supported.  Requested rank: ",
             slice_dim);
     }
+  }
+  if constexpr (DROP_BAD_INDICES) {
+    return absl::OkStatus();
   }
   if (bad_i >= 0) {
     auto slice_shape = indices.shape();
@@ -970,7 +898,8 @@ Status DoScatterNdOnCpu(OpKernelContext* c, const Tensor& indices,
 // back to GPU. This is useful because the CPU implementation is deterministic
 // and the GPU implementation is not. Tensor inputs to this function must be on
 // the GPU.
-template <typename T, typename Index, scatter_nd_op::UpdateOp Op>
+template <typename T, typename Index, scatter_nd_op::UpdateOp Op,
+          bool DROP_BAD_INDICES>
 Status DoScatterNdOnCpu(OpKernelContext* c, const Tensor& indices,
                         const Tensor& updates, const TensorShape& shape,
                         Tensor* out, bool allocate) {
@@ -1015,7 +944,7 @@ Status DoScatterNdOnCpu(OpKernelContext* c, const Tensor& indices,
   }
 
   TF_RETURN_IF_ERROR(stream->BlockHostUntilDone());
-  TF_RETURN_IF_ERROR(DoScatterNd<CPUDevice, T, Index, Op>(
+  TF_RETURN_IF_ERROR(DoScatterNd<CPUDevice, T, Index, Op, DROP_BAD_INDICES>(
       c, host_indices, host_updates, shape, &host_out, /*allocate=*/false));
 
   // Copy 'host_out' to device.
@@ -1033,15 +962,15 @@ Status DoScatterNdOnCpu(OpKernelContext* c, const Tensor& indices,
 }  // namespace
 
 template <typename Device, typename T, typename Index,
-          scatter_nd_op::UpdateOp Op>
+          scatter_nd_op::UpdateOp Op, bool DROP_BAD_INDICES>
 Status DoScatterNd(OpKernelContext* c, const Tensor& indices,
                    const Tensor& updates, const TensorShape& shape, Tensor* out,
                    bool allocate) {
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
   if (std::is_same<Device, GPUDevice>::value &&
       tensorflow::OpDeterminismRequired() && !DisableScatterOpDeterminism()) {
-    return DoScatterNdOnCpu<T, Index, Op>(c, indices, updates, shape, out,
-                                          allocate);
+    return DoScatterNdOnCpu<T, Index, Op, DROP_BAD_INDICES>(
+        c, indices, updates, shape, out, allocate);
   }
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
@@ -1049,11 +978,11 @@ Status DoScatterNd(OpKernelContext* c, const Tensor& indices,
   // atomics, which are not supported for all integer types.
   if constexpr (std::is_same<Device, GPUDevice>::value &&
                 std::is_integral<T>::value) {
-    return DoScatterNdOnCpu<T, Index, Op>(c, indices, updates, shape, out,
-                                          allocate);
+    return DoScatterNdOnCpu<T, Index, Op, DROP_BAD_INDICES>(
+        c, indices, updates, shape, out, allocate);
   } else {
-    return DoScatterNdImpl<Device, T, Index, Op>(c, indices, updates, shape,
-                                                 out, allocate);
+    return DoScatterNdImpl<Device, T, Index, Op, DROP_BAD_INDICES>(
+        c, indices, updates, shape, out, allocate);
   }
 }
 }  // namespace functor
@@ -1061,16 +990,29 @@ Status DoScatterNd(OpKernelContext* c, const Tensor& indices,
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 // Forward declarations of the functor specializations for GPU.
 namespace functor {
-#define DECLARE_GPU_SPECS_INDEX_OP_IXDIM(T, Index, op, IXDIM)           \
-  template <>                                                           \
-  Index ScatterNdFunctor<GPUDevice, T, Index, op, IXDIM>::operator()(   \
-      const GPUDevice& d, const Index slice_size,                       \
-      const Eigen::array<Eigen::DenseIndex, IXDIM> output_shape_prefix, \
-      typename TTypes<T, 2>::Tensor Tparams,                            \
-      typename TTypes<Index, 2>::ConstTensor Tindices,                  \
-      typename TTypes<T, 2>::ConstTensor Tupdates,                      \
-      typename TTypes<T, 2>::Tensor Toutput);                           \
-  extern template struct ScatterNdFunctor<GPUDevice, T, Index, op, IXDIM>;
+#define DECLARE_GPU_SPECS_INDEX_OP_IXDIM(T, Index, op, IXDIM)                  \
+  template <>                                                                  \
+  Index ScatterNdFunctor<GPUDevice, T, Index, op, IXDIM,                       \
+                         /*DROP_BAD_INDICES=*/true>::                          \
+  operator()(const GPUDevice& d, const Index slice_size,                       \
+             const Eigen::array<Eigen::DenseIndex, IXDIM> output_shape_prefix, \
+             typename TTypes<T, 2>::Tensor Tparams,                            \
+             typename TTypes<Index, 2>::ConstTensor Tindices,                  \
+             typename TTypes<T, 2>::ConstTensor Tupdates,                      \
+             typename TTypes<T, 2>::Tensor Toutput);                           \
+  extern template struct ScatterNdFunctor<GPUDevice, T, Index, op, IXDIM,      \
+                                          /*DROP_BAD_INDICES=*/true>;          \
+  template <>                                                                  \
+  Index ScatterNdFunctor<GPUDevice, T, Index, op, IXDIM,                       \
+                         /*DROP_BAD_INDICES=*/false>::                         \
+  operator()(const GPUDevice& d, const Index slice_size,                       \
+             const Eigen::array<Eigen::DenseIndex, IXDIM> output_shape_prefix, \
+             typename TTypes<T, 2>::Tensor Tparams,                            \
+             typename TTypes<Index, 2>::ConstTensor Tindices,                  \
+             typename TTypes<T, 2>::ConstTensor Tupdates,                      \
+             typename TTypes<T, 2>::Tensor Toutput);                           \
+  extern template struct ScatterNdFunctor<GPUDevice, T, Index, op, IXDIM,      \
+                                          /*DROP_BAD_INDICES=*/false>;
 
 #define DECLARE_GPU_SPECS_INDEX_OP(T, Index, op)     \
   DECLARE_GPU_SPECS_INDEX_OP_IXDIM(T, Index, op, 1); \
